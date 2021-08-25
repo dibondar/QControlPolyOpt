@@ -41,6 +41,11 @@ class CABSQCPolyOpt(object):
         self.u = lambdify(t, sum(c * t ** n_ for n_, c in enumerate(self.x)))
 
     def _get_control_ncpol2sdpa(self):
+        """
+        Optimize self.obj using ncpol2sdpa via mosek.
+        Note self.obj must be defined in a child class.
+        :return: None
+        """
         t = symbols('t', real=True)
 
         sdp = SdpRelaxation(self.x)
@@ -68,6 +73,11 @@ class CABSQCPolyOpt(object):
         return u_reconstructed_str, u_reconstructed
 
     def _get_control_scipy(self):
+        """
+        Optimize self.obj using the conjugate gradient in scipy.
+        Note self.obj must be defined in a child class.
+        :return: None
+        """
         t = symbols('t', real=True)
 
         x = self.x
@@ -110,8 +120,9 @@ class CABSQCPolyOpt(object):
 
     def get_control(self):
         """
-        self.obj must be defined
-        :return:
+        Find the control via polynomial optimization using the method specified in self.min_module.
+        Note self.obj must be defined in a child class.
+        :return: None
         """
         if self.min_module == 'ncpol2sdpa':
             self.u_reconstructed = {'ncpol2sdpa': self._get_control_ncpol2sdpa()}
