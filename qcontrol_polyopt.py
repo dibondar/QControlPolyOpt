@@ -128,7 +128,7 @@ class CABSQCPolyOpt(object):
             self.u_reconstructed = {'ncpol2sdpa': self._get_control_ncpol2sdpa()}
 
         elif self.min_module == 'scipy':
-            self.u_reconstructed = {'scipy', self._get_control_scipy()}
+            self.u_reconstructed = {'scipy': self._get_control_scipy()}
 
         elif self.min_module == 'both':
             self.u_reconstructed = {'ncpol2sdpa': self._get_control_ncpol2sdpa(), 'scipy': self._get_control_scipy()}
