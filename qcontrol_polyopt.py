@@ -1,235 +1,138 @@
 """
 Library of classes for quantum control via commutative pop optimization
 """
-import numpy as np
 from ncpol2sdpa import generate_variables, SdpRelaxation
-from scipy.optimize import minimize
-from sympy import symbols, lambdify, re, exp, I, integrate, Matrix, Rational
+from sympy import symbols, lambdify, re, exp, I, eye, integrate, Matrix, Rational
 
-class CABSQCPolyOpt(object):
+def commutator(a, b):
+    return a @ b - b @ a
+
+class QControlPolyOpt(object):
     """
-    Abstract base class for all methods of quantum control via commutative pop optimization
+    Quantum Control via Commutative Pop Opt with Unitary Preserving Pade Approximation for Magnus expansion
     """
-    def __init__(self, *, H0, V, U_target, T, min_module='ncpol2sdpa', npoly=6, **kwargs):
+    def __init__(self, *, H0, V, T=1, npoly=2, **kwargs):
         """
         Constructor
-        :param H0: the field free Hamiltonian (use a diagonal matrix for efficiency of symbolic calculations)
-        :param V: the interaction matrix describing the coupling with a control field
-        :param U_target: the target unitary matrix
-        :param T: (flot) the final (terminal) time when we want to reach a target unitary U_target
-        :param min_module: (str) Minimization module to be used. Avalible values are ('ncpol2sdpa', 'scipy', and 'both')
+        :param H0: the Drift Hamiltonian
+        :param V: Control Hamiltonian
+        :param T: Terminal time
+        :param kwargs: ignored
         :param npoly: (int) the degree of polynomial approximation for the sought control field
-        :param kwargs:
         """
-        super(CABSQCPolyOpt, self).__init__(**kwargs)
-
-        # save the data
-        self.H0 = H0
-        self.V = V
         self.T = T
-        self.U_target = Matrix(U_target)
-        self.npoly = npoly
-        self.min_module = min_module
 
-        # time variable
-        t = symbols('t', real=True)
+        # convert to sympy matrix
+        self.H0 = Matrix(H0)
+        self.V = Matrix(V)
 
-        # the coefficients as varaibles to be minimize over
-        self.x = generate_variables('x', self.npoly)
+        ################################################################################################################
+        #
+        # Define control $u(t)$
+        #
+        ################################################################################################################
 
-        # define the sought controls symbolically as a polynomial
-        self.u = lambdify(t, sum(c * t ** n_ for n_, c in enumerate(self.x)))
+        # Declare unknowns to be found
+        self.x = generate_variables('x', npoly + 1)
 
-    def _get_control_ncpol2sdpa(self):
+        # Declare time variable
+        self.t = symbols('t', real=True)
+
+        # Postulate the polynomial shape for controls
+        self.u = lambdify(self.t, sum(c * self.t ** n_ for n_, c in enumerate(self.x)))
+
+        Omega = self.get_truncated_Magnus_expansion(self.u)
+
+        ident = self.ident = eye(Omega.shape[0])
+
+        ################################################################################################################
+        #
+        # Evaluating Matrix exponent by unitarity preserving Pade approximation (i.e., the Cayley transform)
+        # $$
+        #     \exp \Omega = \frac{1 + \tanh(\Omega/2)}{1 - \tanh(\Omega/2)}, \\
+        #     \tanh(\Omega/2) \approx \Omega/2 - \frac{1}{3}(\Omega/2)^3
+        #     + \frac{2}{15} (\Omega/2)^5 \\
+        #      = \Omega/2 \left(1 + (\Omega/2)^2 \left[-\frac{1}{3} +\frac{2}{15} (\Omega/2)^2 \right] \right)
+        # $$
+        #
+        # In the next section we evaluate the above approximation for \tanh(\Omega/2) and save it as self.approx_tanh.
+        # Note that we empirically found that it is good to keep first 3 terms in the Taylor expansion for tanh
+        #
+        ################################################################################################################
+
+        Omega22 = (Omega @ Omega / 4).simplify()
+
+        self.approx_tanh = Omega / 2 @ (
+            ident + Omega22 @ (Rational(-1, 3) * ident + Rational(2, 15) * Omega22)
+        )
+        self.approx_tanh = self.approx_tanh.simplify()
+
+    def get_controls(self, U_target, spd_relax=5):
         """
-        Optimize self.obj using ncpol2sdpa via mosek.
-        Note self.obj must be defined in a child class.
-        :return: None
+        Find a control field synthesizing a specified unitary target
+        :param U_target: (numpy.array) the target unitary gate to be synthesized
+        :param relax_level: (int) SPD relaxation level
+        :return: self. Results saved as properties self.u_opt, self.opt_x, self.obj_poly_val
         """
-        t = symbols('t', real=True)
+        #  Construct the polynomial objective function to be minimized
+        self.obj_poly = (
+            self.ident - U_target + (self.ident + U_target) @ self.approx_tanh
+        ).norm() ** 2
 
+        self.obj_poly = re(self.obj_poly)
+
+        # perform minimization
         sdp = SdpRelaxation(self.x)
-        sdp.get_relaxation(4, objective=re(self.obj))
+        sdp.get_relaxation(5, objective=self.obj_poly)
         sdp.solve(solver='mosek')
 
         # extract the values of control
-        # if sdp.status == 'optimal':
-        opt_vals = [sdp[_] for _ in sdp.variables]
-
-        # save the value of objective function
-        self.obj_val = self.obj.subs(
-            zip(sdp.variables, (sdp[_] for _ in sdp.variables))
-        ).evalf()
-
-        # construct the control
-        u_reconstructed = sum(c * t ** n_ for n_, c in enumerate(opt_vals))
-
-        # Covert u_reconstructed to string for qutip
-        u_reconstructed_str = str(u_reconstructed)
-
-        # u_reconstructed for plotting
-        u_reconstructed = lambdify(t, u_reconstructed, 'numpy')
-
-        return u_reconstructed_str, u_reconstructed
-
-    def _get_control_scipy(self):
-        """
-        Optimize self.obj using the conjugate gradient in scipy.
-        Note self.obj must be defined in a child class.
-        :return: None
-        """
-        t = symbols('t', real=True)
-
-        x = self.x
-
-        # get the objective function, , and hessian
-        f = re(self.obj)
-
-        # symbolically get the Jacobian
-        jac = [f.diff(_) for _ in x]
-
-        # symbolically get the Hessian
-        hess = [[df.diff(_) for _ in x] for df in jac]
-
-        f = lambdify(x, f, 'numpy')
-        jac = lambdify(x, jac, 'numpy')
-        hess = lambdify(x, hess, 'numpy')
-
-        # Use the conjugate gradient method in scipy since we have both the Jacobian and Hessian of the objective function
-        solution = minimize(
-            lambda _: f(*_),
-            np.zeros(len(x)),
-            jac=lambda _: jac(*_),
-            hess=lambda _: hess(*_),
-            method='CG'
-        )
-
-        # save the value of objective function
-        self.obj_val = solution.fun
-
-        # construct the control
-        u_reconstructed = sum(c * t ** n_ for n_, c in enumerate(solution.x))
-
-        # Covert u_reconstructed to string for qutip
-        u_reconstructed_str = str(u_reconstructed)
-
-        # u_reconstructed for plotting
-        u_reconstructed = lambdify(t, u_reconstructed, 'numpy')
-
-        return u_reconstructed_str, u_reconstructed
-
-    def get_control(self):
-        """
-        Find the control via polynomial optimization using the method specified in self.min_module.
-        Note self.obj must be defined in a child class.
-        :return: None
-        """
-        if self.min_module == 'ncpol2sdpa':
-            self.u_reconstructed = {'ncpol2sdpa': self._get_control_ncpol2sdpa()}
-
-        elif self.min_module == 'scipy':
-            self.u_reconstructed = {'scipy': self._get_control_scipy()}
-
-        elif self.min_module == 'both':
-            self.u_reconstructed = {'ncpol2sdpa': self._get_control_ncpol2sdpa(), 'scipy': self._get_control_scipy()}
-
+        if sdp.status == 'optimal':
+            self.opt_x = {_: sdp[_] for _ in sdp.variables}
+            self.obj_poly_val = self.obj_poly.subs(self.opt_x)
+            self.u_opt = lambdify(self.t, self.u(self.t).subs(self.opt_x))
         else:
-            raise ValueError("min_module must be one of 'ncpol2sdpa', 'scipy', and 'both'")
+            self.opt_x = self.u_opt = self.obj_poly_val = None
 
+        return self
 
-class CQCPolyOptDyson(CABSQCPolyOpt):
-    """
-    Class using the first order Dyson series (with respect to the field interaction) to find the control field
-    via commutative pop optimization to reach the taggert unitary.
-    """
-    def __init__(self, **kwargs):
+    def A(self, u, t):
         """
-        Constructor
-        :param kwargs: all the arguments are passed to the constructor of class CABSQCPolyOpt
+        The generator of motion entering the Magnus expansion
+        :param u: control
+        :param t:  time variable
+        :return: sympy matrix
         """
-        super(CQCPolyOptDyson, self).__init__(**kwargs)
+        return (self.H0 + self.V * u(t)) / I
 
-        ################################################################################################################
-        #
-        #   Define the objective polynomial function using the Dyson series
-        #
-        ################################################################################################################
-
-        # aliases
-        T = self.T
-        u = self.u
-
-        # symbols
+    def get_truncated_Magnus_expansion(self, u):
+        """
+        Return \Omega = \Omega_1 + \Omega_2 - the partial sum of the Magnus expansion
+        :param u: control as lambdify function of time
+        :return: sympy matrix
+        """
+        # Declare time variables
         t1, t2, t3 = symbols('t1, t2, t3', real=True)
 
-        # the field free propagator
-        U0 = lambda t: exp(-I * self.H0 * t)
+        A1 = self.A(u, t1)
+        A2 = self.A(u, t2)
+        A3 = self.A(u, t3)
 
-        # we assume the initial time is zero
-        first_order = -I * integrate(U0(T - t1) * self.V * u(t1) * U0(t1), (t1, 0, T))
+        T = self.T
 
-        dyson_series = U0(T) + first_order
+        Omega1 = integrate(A1, (t1, 0, T))
 
-        self.obj = (
-                (dyson_series - self.U_target).norm() ** 2
-        ).evalf()
-
-        ################################################################################################################
-        #
-        #   Find the control via optimization
-        #
-        ################################################################################################################
-
-        self.get_control()
-
-
-class CQCPolyOptMagnus(CABSQCPolyOpt):
-    """
-    Class using the second order Margus series
-    (as well as the Lipschitz continuity of a matrix exp to unroll the exponentiation in the Magus formula)
-    to find the control field via commutative pop optimization to reach the taggert unitary.
-    """
-    def __init__(self, **kwargs):
-        """
-        Constructor
-        :param kwargs: all the arguments are passed to the constructor of class CABSQCPolyOpt
-        """
-        super(CQCPolyOptMagnus, self).__init__(**kwargs)
-
-        ################################################################################################################
-        #
-        #   Define the objective polynomial function using the Magnus series
-        #
-        ################################################################################################################
-
-        # symbols
-        t1, t2 = symbols('t1, t2', real=True)
-
-        # introduce alias
-        def h(t):
-            return self.H0 + self.V * self.u(t)
-
-        def Commutator(a, b):
-            return a * b - b * a
-
-        first_order = -integrate(h(t1), (t1, 0, self.T))
-
-        second_order = -I * Rational(1, 2) * integrate(
-            Commutator(integrate(h(t2), (t2, 0, t1)), h(t1)),
-            (t1, 0, self.T)
+        Omega2 = Rational(1, 2) * integrate(integrate(
+            commutator(A1, A2),
+            (t2, 0, t1)), (t1, 0, T)
         )
 
-        magnus_series = first_order + second_order
+        # We empirically found that adding 3-rd order term does not improve much results
 
-        # notice no exponentiation (see the paper for details)
-        self.obj = (
-                (magnus_series - self.U_target).norm() ** 2
-        ).evalf()
+        # Omega3 = Rational(1, 6) * integrate(integrate(integrate(
+        #    commutator(A1, commutator(A2, A3))
+        #    + commutator(commutator(A1, A2), A3),
+        #    (t3, 0, t2)), (t2, 0, t1)), (t1, 0, T)
+        # )
 
-        ################################################################################################################
-        #
-        #   Find the control via optimization
-        #
-        ################################################################################################################
-
-        self.get_control()
+        return Omega1 + Omega2 # + Omega3
