@@ -38,9 +38,6 @@ class QControlPolyOpt(object):
         # Declare time variable
         self.t = symbols('t', real=True)
 
-        # Postulate the polynomial shape for controls
-        self.u = lambdify(self.t, sum(c * self.t ** n_ for n_, c in enumerate(self.x)))
-
         Omega = self.get_truncated_Magnus_expansion(self.u)
 
         ident = self.ident = eye(Omega.shape[0])
@@ -66,6 +63,14 @@ class QControlPolyOpt(object):
             ident + Omega22 @ (Rational(-1, 3) * ident + Rational(2, 15) * Omega22)
         )
         self.approx_tanh = self.approx_tanh.simplify()
+
+    @property
+    def u(self):
+        """
+        Postulated the polynomial shape for controls
+        :return: lambdify simpy function
+        """
+        return lambdify(self.t, sum(c * self.t ** n_ for n_, c in enumerate(self.x)))
 
     def get_controls(self, U_target, spd_relax=5):
         """
