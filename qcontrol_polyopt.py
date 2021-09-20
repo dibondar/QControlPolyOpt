@@ -88,7 +88,7 @@ class QControlPolyOpt(object):
 
         # perform minimization
         sdp = SdpRelaxation(self.x)
-        sdp.get_relaxation(5, objective=self.obj_poly)
+        sdp.get_relaxation(spd_relax, objective=self.obj_poly)
         sdp.solve(solver='mosek')
 
         # extract the values of control
