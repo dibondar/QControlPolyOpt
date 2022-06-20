@@ -11,7 +11,7 @@ from qutip import propagator, Qobj
 def qcontrol_to_get_rand_unit(args):
     """
     :param args: control, H0, V, spd_relax, seed
-    :return: U_target, norm_diff, obj_poly_val: norm_diff is the distance norm between the target (U_target) and synthesized unitary
+    :return: U_target, x_exact, norm_diff, obj_poly_val: norm_diff is the distance norm between the target (U_target) and synthesized unitary
     """
     control, H0, V, spd_relax, seed = args
 
@@ -23,7 +23,8 @@ def qcontrol_to_get_rand_unit(args):
     t = control.t
 
     # Randomly generate the control field
-    x_test = dict(zip(control.x, np.random.uniform(-1, 1, len(control.x))))
+    x_exact_val = np.random.uniform(-1, 1, len(control.x))
+    x_test = dict(zip(control.x, x_exact_val))
     u_test = control.u(t).subs(x_test)
 
     # get a unitary by propagating in the generated random field
@@ -47,7 +48,7 @@ def qcontrol_to_get_rand_unit(args):
         # return the Frobenius norm between the unitaries
         norm_diff = (U_target - U_opt).norm(norm='fro')
 
-    return np.array(U_target, dtype=np.complex), norm_diff, obj_poly_val
+    return np.array(U_target, dtype=np.complex), x_exact_val, norm_diff, obj_poly_val
 
 
 def get_seeds(size):
@@ -108,21 +109,22 @@ if __name__ == '__main__':
     np.random.seed(9202021)
 
     # SPD relaxation level
-    spd_relax = 5
+    spd_relax = 8
 
-    # the iterator to launch (2 * chunksize) trajectories
-    chunksize = 1
-    iter_arg = ((control, H0, V, spd_relax, seed) for seed in get_seeds(2 * chunksize))
+    # the iterator to launch (110 * chunksize) trajectories
+    chunksize = 1000
+    iter_arg = ((control, H0, V, spd_relax, seed) for seed in get_seeds(110 * chunksize))
 
     # run tests on multiple cores
     with Pool() as pool:
         results = list(pool.imap_unordered(qcontrol_to_get_rand_unit, iter_arg, chunksize=chunksize))
 
-    U_targets, norm_diffs, obj_poly_vals = zip(*results)
+    U_targets, x_exact_vals, norm_diffs, obj_poly_vals = zip(*results)
 
     np.savez_compressed(
         'ensamble_simulations_spd_relax={}.npz'.format(spd_relax),
         U_targets=U_targets,
+        x_exact_vals=x_exact_vals,
         norm_diffs=norm_diffs,
         obj_poly_vals=np.array(obj_poly_vals, dtype=np.float),
     )
