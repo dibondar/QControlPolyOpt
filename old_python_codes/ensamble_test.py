@@ -2,7 +2,7 @@
 Try to synthesize a random reachable unitary matrix
 """
 
-from qcontrol_polyopt import *
+from old_python_codes.qcontrol_polyopt import *
 import numpy as np
 from multiprocessing import Pool
 from qutip import propagator, Qobj
@@ -78,8 +78,6 @@ def get_seeds(size):
 
 
 if __name__ == '__main__':
-    import matplotlib.pyplot as plt
-
     # Quantum system is taken from https://github.com/q-optimize/c3/blob/master/examples/two_qubits.ipynb
 
     # Drift Hamiltonian
