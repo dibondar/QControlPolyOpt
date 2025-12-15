@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+title: "QControlPolyOpt"
+message: "If you use this software, please cite the following paper."
+authors:
+  - family-names: Bondar
+    given-names: D. V.
+doi: 10.1103/g4fb-xm13
+url: https://github.com/dibondar/QControlPolyOpt
